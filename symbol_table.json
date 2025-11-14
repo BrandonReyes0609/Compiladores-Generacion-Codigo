@@ -1,0 +1,394 @@
+{
+  "scope": "global",
+  "level": 0,
+  "symbols": [
+    {
+      "name": "toString",
+      "type": "fn()->void",
+      "const": false,
+      "line": null,
+      "col": null,
+      "offset": 0,
+      "label": null,
+      "is_param": false
+    },
+    {
+      "name": "nombre",
+      "type": "string",
+      "const": false,
+      "line": null,
+      "col": null,
+      "offset": 1,
+      "label": null,
+      "is_param": false
+    },
+    {
+      "name": "edad",
+      "type": "string",
+      "const": false,
+      "line": null,
+      "col": null,
+      "offset": 2,
+      "label": null,
+      "is_param": false
+    },
+    {
+      "name": "color",
+      "type": "string",
+      "const": false,
+      "line": null,
+      "col": null,
+      "offset": 3,
+      "label": null,
+      "is_param": false
+    },
+    {
+      "name": "constructor",
+      "type": "fn()->void",
+      "const": false,
+      "line": null,
+      "col": null,
+      "offset": 4,
+      "label": null,
+      "is_param": false
+    },
+    {
+      "name": "saludar",
+      "type": "fn()->void",
+      "const": false,
+      "line": null,
+      "col": null,
+      "offset": 5,
+      "label": null,
+      "is_param": false
+    },
+    {
+      "name": "incrementarEdad",
+      "type": "fn()->void",
+      "const": false,
+      "line": null,
+      "col": null,
+      "offset": 6,
+      "label": null,
+      "is_param": false
+    },
+    {
+      "name": "grado",
+      "type": "string",
+      "const": false,
+      "line": null,
+      "col": null,
+      "offset": 7,
+      "label": null,
+      "is_param": false
+    },
+    {
+      "name": "estudiar",
+      "type": "fn()->void",
+      "const": false,
+      "line": null,
+      "col": null,
+      "offset": 8,
+      "label": null,
+      "is_param": false
+    },
+    {
+      "name": "promedioNotas",
+      "type": "fn()->void",
+      "const": false,
+      "line": null,
+      "col": null,
+      "offset": 9,
+      "label": null,
+      "is_param": false
+    },
+    {
+      "name": "log",
+      "type": "string",
+      "const": false,
+      "line": null,
+      "col": null,
+      "offset": 10,
+      "label": null,
+      "is_param": false
+    },
+    {
+      "name": "nombre_local",
+      "type": "string",
+      "const": false,
+      "line": null,
+      "col": null,
+      "offset": 11,
+      "label": null,
+      "is_param": false
+    },
+    {
+      "name": "juan",
+      "type": "string",
+      "const": false,
+      "line": null,
+      "col": null,
+      "offset": 12,
+      "label": null,
+      "is_param": false
+    },
+    {
+      "name": "i",
+      "type": "string",
+      "const": false,
+      "line": null,
+      "col": null,
+      "offset": 13,
+      "label": null,
+      "is_param": false
+    },
+    {
+      "name": "resultado",
+      "type": "string",
+      "const": false,
+      "line": null,
+      "col": null,
+      "offset": 14,
+      "label": null,
+      "is_param": false
+    },
+    {
+      "name": "prom",
+      "type": "string",
+      "const": false,
+      "line": null,
+      "col": null,
+      "offset": 15,
+      "label": null,
+      "is_param": false
+    }
+  ],
+  "children": [
+    {
+      "scope": "func:toString",
+      "level": 1,
+      "symbols": [
+        {
+          "name": "p_x",
+          "type": "string",
+          "const": false,
+          "line": null,
+          "col": null,
+          "offset": 0,
+          "label": null,
+          "is_param": true
+        }
+      ],
+      "children": [
+        {
+          "scope": "block@2",
+          "level": 2,
+          "symbols": [],
+          "children": []
+        }
+      ]
+    },
+    {
+      "scope": "func:constructor",
+      "level": 1,
+      "symbols": [
+        {
+          "name": "p_nombre",
+          "type": "string",
+          "const": false,
+          "line": null,
+          "col": null,
+          "offset": 0,
+          "label": null,
+          "is_param": true
+        },
+        {
+          "name": "p_edad",
+          "type": "string",
+          "const": false,
+          "line": null,
+          "col": null,
+          "offset": 1,
+          "label": null,
+          "is_param": true
+        }
+      ],
+      "children": [
+        {
+          "scope": "block@12",
+          "level": 2,
+          "symbols": [],
+          "children": []
+        }
+      ]
+    },
+    {
+      "scope": "func:saludar",
+      "level": 1,
+      "symbols": [],
+      "children": [
+        {
+          "scope": "block@18",
+          "level": 2,
+          "symbols": [],
+          "children": []
+        }
+      ]
+    },
+    {
+      "scope": "func:incrementarEdad",
+      "level": 1,
+      "symbols": [
+        {
+          "name": "p_anos",
+          "type": "string",
+          "const": false,
+          "line": null,
+          "col": null,
+          "offset": 0,
+          "label": null,
+          "is_param": true
+        }
+      ],
+      "children": [
+        {
+          "scope": "block@22",
+          "level": 2,
+          "symbols": [],
+          "children": []
+        }
+      ]
+    },
+    {
+      "scope": "func:constructor",
+      "level": 1,
+      "symbols": [
+        {
+          "name": "p_nombre",
+          "type": "string",
+          "const": false,
+          "line": null,
+          "col": null,
+          "offset": 0,
+          "label": null,
+          "is_param": true
+        },
+        {
+          "name": "p_edad",
+          "type": "string",
+          "const": false,
+          "line": null,
+          "col": null,
+          "offset": 1,
+          "label": null,
+          "is_param": true
+        },
+        {
+          "name": "p_grado",
+          "type": "string",
+          "const": false,
+          "line": null,
+          "col": null,
+          "offset": 2,
+          "label": null,
+          "is_param": true
+        }
+      ],
+      "children": [
+        {
+          "scope": "block@32",
+          "level": 2,
+          "symbols": [],
+          "children": []
+        }
+      ]
+    },
+    {
+      "scope": "func:estudiar",
+      "level": 1,
+      "symbols": [],
+      "children": [
+        {
+          "scope": "block@40",
+          "level": 2,
+          "symbols": [],
+          "children": []
+        }
+      ]
+    },
+    {
+      "scope": "func:promedioNotas",
+      "level": 1,
+      "symbols": [
+        {
+          "name": "p_nota1",
+          "type": "string",
+          "const": false,
+          "line": null,
+          "col": null,
+          "offset": 0,
+          "label": null,
+          "is_param": true
+        },
+        {
+          "name": "p_nota2",
+          "type": "string",
+          "const": false,
+          "line": null,
+          "col": null,
+          "offset": 1,
+          "label": null,
+          "is_param": true
+        },
+        {
+          "name": "p_nota3",
+          "type": "string",
+          "const": false,
+          "line": null,
+          "col": null,
+          "offset": 2,
+          "label": null,
+          "is_param": true
+        }
+      ],
+      "children": [
+        {
+          "scope": "block@44",
+          "level": 2,
+          "symbols": [
+            {
+              "name": "promedio",
+              "type": "string",
+              "const": false,
+              "line": null,
+              "col": null,
+              "offset": 0,
+              "label": null,
+              "is_param": false
+            }
+          ],
+          "children": []
+        }
+      ]
+    },
+    {
+      "scope": "block@63",
+      "level": 1,
+      "symbols": [],
+      "children": [
+        {
+          "scope": "block@64",
+          "level": 2,
+          "symbols": [],
+          "children": []
+        },
+        {
+          "scope": "block@66",
+          "level": 2,
+          "symbols": [],
+          "children": []
+        }
+      ]
+    }
+  ]
+}
