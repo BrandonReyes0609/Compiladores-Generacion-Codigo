@@ -183,18 +183,26 @@ def parse_code_from_string(source: str) -> Dict[str, Any]:
     }
 
 # ---------- Modo consola ----------
+# ---------- Modo consola ----------
 def main(argv):
     src_path = ROOT / "program.cps"
     if len(argv) > 1:
         src_path = Path(argv[1]).resolve()
-    input_stream = FileStream(str(src_path), encoding="utf-8")
-    code = input_stream.read()
+
+    #Leer como texto normal, NO usar FileStream.read()
+    try:
+        code = Path(src_path).read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        # fallback si el archivo tiene otra codificación
+        code = Path(src_path).read_text(encoding="latin-1")
+
     out = parse_code_from_string(code)
     print(out["messages"])
     if out.get("ir"):
         print("\n=== TAC ===\n" + out["ir"])
     if out.get("asm"):
         print("\n=== ASM (MIPS) ===\n" + out["asm"])
+
 
 if __name__ == '__main__':
     main(sys.argv)
