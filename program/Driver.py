@@ -42,6 +42,15 @@ from program.symbol_table import SymbolTable
 from program.type_check_visitor import TypeCheckVisitor
 from program.TACGeneratorVisitor import TACGeneratorVisitor
 
+# --- Backend MIPS (nuevo) ---
+try:
+    from backend.mips.tac_parser import parse_tac_text
+    from backend.mips.emitter import MIPSEmitter
+except Exception:
+    # Permite que el IDE corra aunque aún no exista el backend; la generación de ASM fallará elegantemente.
+    parse_tac_text = None
+    MIPSEmitter = None
+
 
 # ---------- Listener de errores sintácticos ----------
 class CollectingErrorListener(ErrorListener):
@@ -136,11 +145,27 @@ def parse_code_from_string(source: str) -> Dict[str, Any]:
 
     t3 = time.perf_counter()
 
+    # ASM (MIPS) desde TAC
+    t_asm_start = time.perf_counter()
+    if tac_ok and parse_tac_text is not None and MIPSEmitter is not None:
+        try:
+            quads = parse_tac_text(ir)
+            emitter = MIPSEmitter()
+            emitter.emit_preamble()           # reservado para extensiones
+            emitter.from_quads(quads)
+            asm = emitter.build()
+        except Exception as e:
+            asm = "# Error al emitir MIPS: " + str(e)
+    elif tac_ok:
+        asm = "# Backend MIPS no disponible (faltan backend/mips/*)."
+
+    t_asm_end = time.perf_counter()
+
     timings = {
         "parse_ms":    round((t1 - t0) * 1000),
         "semantic_ms": round((t2 - t1) * 1000),
         "ir_ms":       round((t3 - t2) * 1000) if tac_ok else 0,
-        "asm_ms":      0,
+        "asm_ms":      round((t_asm_end - t_asm_start) * 1000) if tac_ok else 0,
     }
 
     all_errors = syn.errors + sem_struct
@@ -168,6 +193,8 @@ def main(argv):
     print(out["messages"])
     if out.get("ir"):
         print("\n=== TAC ===\n" + out["ir"])
+    if out.get("asm"):
+        print("\n=== ASM (MIPS) ===\n" + out["asm"])
 
 if __name__ == '__main__':
     main(sys.argv)
