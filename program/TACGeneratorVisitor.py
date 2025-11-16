@@ -15,6 +15,13 @@ Incluye (resumen de características):
 - Anotaciones de frame con base–desplazamiento si la TS trae offsets (params/locales).
 - Etiquetas y utilidades para generación de TAC legible y estable.
 
+Mejoras nuevas en esta versión:
+- (Solución A) Sin sobrecarga de constructores: por clase, si ya se emitió un 'constructor',
+  se ignoran los subsecuentes (se deja un aviso 'Raw').
+- Alias sistemático de parámetros (p_*) y calificación de campos vía 'this' en constructor:
+  se emite setprop this, campo, p_campo (evita 'nombre = nombre').
+- Limpieza extra de copias triviales y coalescing simple de temporales.
+
 Esta versión está pensada como drop-in para tu proyecto actual.
 """
 
@@ -84,6 +91,10 @@ class TACGeneratorVisitor(CompiscriptVisitor):
         # ---- Alias de parámetros (p_x) ----
         self.param_alias: Dict[str, str] = {}
         self._alias_stack: List[Dict[str, str]] = []
+
+        # ---- Control de miembros ya emitidos por clase (para bloquear sobrecarga) ----
+        # Estructura: { "Clase": {"constructor", "metodoX", ...} }
+        self._emitted_members: Dict[str, set] = {}
 
     # ---- helper de alias
     def _alias(self, name: str) -> str:
@@ -713,6 +724,7 @@ class TACGeneratorVisitor(CompiscriptVisitor):
         try:
             if hasattr(ctx, "Identifier") and ctx.Identifier() is not None:
                 left_text = self._alias(ctx.Identifier().getText())
+                # Evita 'x = x' redundante en constructor si x es p_* -> ya inyectado
                 self.emit(f"{left_text} = {right}")
                 self.tm.free(right)
                 return left_text
@@ -730,7 +742,7 @@ class TACGeneratorVisitor(CompiscriptVisitor):
             self.tm.free(right)
             return lhs_text
 
-        # arr[idx] (placeholder)
+        # arr[idx] (placeholder mínimo)
         if "[" in lhs_text and "]" in lhs_text:
             base_name = lhs_text.split("[", 1)[0]
             idx_t = self.new_temp()
@@ -864,22 +876,20 @@ class TACGeneratorVisitor(CompiscriptVisitor):
         self.break_stack.pop()
 
     # -------------------------------
-    # SWITCH (nuevo para Tarea 5)
+    # SWITCH
     # -------------------------------
     def _extract_switch_cases(self, ctx):
         """
         Devuelve lista de tuplas (valueNode|None para default, blockNode)
-        Soporta nombres comunes de reglas; fallback recorre hijos.
         """
         cases = []
 
-        # Intentos 1: nodos estilo Java/C-like
+        # Intento 1: nodos estilo Java/C-like
         for getter in ("switchBlock", "caseBlock", "cases", "switchBody"):
             gb = getattr(ctx, getter, None)
             if gb and callable(gb):
                 try:
                     blk = gb()
-                    # profundizar un nivel si tiene .caseClause(s)
                     for inner_name in ("caseClauses", "caseList", "clauses", "items"):
                         gi = getattr(blk, inner_name, None)
                         if gi and callable(gi):
@@ -905,7 +915,7 @@ class TACGeneratorVisitor(CompiscriptVisitor):
                 except Exception:
                     pass
 
-        # Intento 2: recorrido plano por hijos buscando "case" / "default"
+        # Intento 2: recorrido plano
         children = [ctx.getChild(i) for i in range(getattr(ctx, "getChildCount", lambda: 0)())]
         i = 0
         while i < len(children):
@@ -944,10 +954,6 @@ class TACGeneratorVisitor(CompiscriptVisitor):
     def visitSwitchStatement(self, ctx):
         """
         switch (expr) { case v1: ...; break; case v2: ...; default: ... }
-        - selector en temporal
-        - etiquetas por caso + default + end
-        - fall-through natural si un case no hace 'break'
-        - 'break' salta al end gracias a break_stack
         """
         # selector
         try:
@@ -967,7 +973,7 @@ class TACGeneratorVisitor(CompiscriptVisitor):
 
         cases = self._extract_switch_cases(ctx)
 
-        # etiquetas por caso
+        # etiquetas
         case_labels: List[str] = []
         default_label: Optional[str] = None
         for v, _b in cases:
@@ -978,7 +984,7 @@ class TACGeneratorVisitor(CompiscriptVisitor):
         if default_label is None:
             default_label = self.new_label()
 
-        # dispatch (cadena de comparaciones)
+        # dispatch
         idx = 0
         for v, _b in cases:
             if v is None:
@@ -1049,12 +1055,39 @@ class TACGeneratorVisitor(CompiscriptVisitor):
             self.emit(f".{tag} {name}, [bp{base}]")
         self.emit(".endframe")
 
+    def _should_skip_member(self, class_name: Optional[str], fname: str) -> bool:
+        """
+        Implementa la política: Sin sobrecarga de constructor/métodos repetidos por nombre.
+        - Si es constructor y ya existe en la clase => omitir emisión.
+        - Si es otro método con mismo nombre ya emitido en la clase => omitir (comportamiento opcional).
+        """
+        if not class_name:
+            return False
+        if class_name not in self._emitted_members:
+            self._emitted_members[class_name] = set()
+
+        # Política principal: bloquear sobrecarga del constructor
+        if fname == "constructor" and "constructor" in self._emitted_members[class_name]:
+            self.emit("Raw: ; [skip] constructor duplicado omitido por política sin sobrecarga")
+            return True
+
+        # (Opcional) Bloquear miembros duplicados por nombre exacto
+        # Descomenta si también quieres bloquear duplicados de métodos normales.
+        # if fname in self._emitted_members[class_name]:
+        #     self.emit(f"Raw: ; [skip] método duplicado '{fname}' omitido")
+        #     return True
+
+        # Marcar como emitido
+        self._emitted_members[class_name].add(fname)
+        return False
+
     def visitFunctionDeclaration(self, ctx):
         """
         Prologo de función/método con:
         - p_* = LoadParam i
         - this = LoadParam arity-1 (si es método; el receptor se pasa AL FINAL)
         - Inyección en constructor: setprop this, campo, p_campo (evita 'nombre = nombre')
+        - (Nuevo) Política sin sobrecarga: se omite un constructor duplicado en la misma clase.
         """
         # nombre
         try:
@@ -1065,6 +1098,10 @@ class TACGeneratorVisitor(CompiscriptVisitor):
         # ¿es método? preferimos flag del semántico; si no, usamos current_class
         is_method = bool(getattr(ctx, "_has_this", False)) or (self.current_class is not None)
         qual = f"{self.current_class}.{fname}" if is_method and self.current_class else fname
+
+        # Política sin sobrecarga (A)
+        if self._should_skip_member(self.current_class, fname):
+            return None
 
         # parámetros crudos
         params = []
@@ -1195,6 +1232,9 @@ class TACGeneratorVisitor(CompiscriptVisitor):
 
         prev = self.current_class
         self.current_class = cname
+        # Inicializa registro de miembros para esta clase si no existe
+        if cname not in self._emitted_members:
+            self._emitted_members[cname] = set()
         for ch in ctx.children or []:
             if hasattr(ch, "accept"):
                 self.visit(ch)
