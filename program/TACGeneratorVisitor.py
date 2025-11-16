@@ -11,7 +11,7 @@ Incluye (resumen de características):
   mientras que el paso de argumentos reales usa 'param ...' antes de 'call ...'.
 - Soporte de 'new Clase(args...)' -> 't = Clase new N' y (opcional) llamada al 'constructor'.
 - Acceso a propiedades: getprop/setprop; LHS estrictamente asignable (id, obj.prop, arr[idx]).
-- Control de flujo: if/else, while, do-while, for, break/continue, lógica con cortocircuito (&&, ||).
+- Control de flujo: if/else, while, do-while, for, break/continue, lógica con cortocircuito (&&, ||), switch.
 - Anotaciones de frame con base–desplazamiento si la TS trae offsets (params/locales).
 - Etiquetas y utilidades para generación de TAC legible y estable.
 
@@ -80,6 +80,14 @@ class TACGeneratorVisitor(CompiscriptVisitor):
         self.current_class: Optional[str] = None
         self.return_seen: bool = False
         self.tm = TempManager()
+
+        # ---- Alias de parámetros (p_x) ----
+        self.param_alias: Dict[str, str] = {}
+        self._alias_stack: List[Dict[str, str]] = []
+
+    # ---- helper de alias
+    def _alias(self, name: str) -> str:
+        return self.param_alias.get(name, name)
 
     # ---- utilidades base
     def emit(self, line: str) -> None:
@@ -200,14 +208,16 @@ class TACGeneratorVisitor(CompiscriptVisitor):
 
     # ---------- props y llamadas ----------
     def gen_getprop(self, base: str, prop: str) -> str:
+        base = self._alias(base)
         t = self.new_temp()
         self.emit(f"{t} = getprop {base}, {prop}")
         return t
 
     def gen_setprop(self, base: str, prop: str, val: str) -> None:
+        base = self._alias(base)
         self.emit(f"setprop {base}, {prop}, {val}")
 
-    # ---------- recolectar argumentos desde el ctx (si la regla existe) ----------
+    # ---------- recolectar argumentos desde el ctx ----------
     def _collect_args_from_ctx(self, ctx) -> List:
         cand = [
             ("arguments", "expression"),
@@ -234,14 +244,8 @@ class TACGeneratorVisitor(CompiscriptVisitor):
                 pass
         return []
 
-    # ---------- Emisores de llamadas (mejorados) ----------
+    # ---------- Emisores de llamadas ----------
     def _emit_function_call(self, name: str, arg_nodes: List) -> str:
-        """
-        Llamada a función global:
-          param argN
-          ...
-          t = call name, N
-        """
         vals: List[str] = [self.visit(n) for n in arg_nodes]
         for v in reversed(vals):
             self.emit(f"param {v}")
@@ -251,13 +255,7 @@ class TACGeneratorVisitor(CompiscriptVisitor):
         return t
 
     def _emit_method_call(self, recv: str, meth: str, arg_nodes: List) -> str:
-        """
-        Llamada a método (this como último param):
-          param argN
-          ...
-          param recv
-          t = call method meth, N+1
-        """
+        recv = self._alias(recv)
         vals: List[str] = [self.visit(n) for n in arg_nodes]
         for v in reversed(vals):
             self.emit(f"param {v}")
@@ -327,7 +325,6 @@ class TACGeneratorVisitor(CompiscriptVisitor):
                 if not args_nodes:
                     inner_text = text_value[text_value.find("(") + 1:text_value.rfind(")")]
                     arg_texts = [a for a in self._split_args_text(inner_text) if a]
-                    # materializar args textuales
                     args_nodes = []
                     for a in arg_texts:
                         tmp = self.new_temp()
@@ -357,9 +354,9 @@ class TACGeneratorVisitor(CompiscriptVisitor):
         recv = meth = None
         if "." in callee:
             recv, meth = callee.split(".", 1)
+            recv = self._alias(recv)
             is_method = True
 
-        # Emitir params
         for a in reversed(arg_texts):
             tmp = self.new_temp()
             self.emit(f"{tmp} = {a}")
@@ -505,16 +502,16 @@ class TACGeneratorVisitor(CompiscriptVisitor):
     # Literales, identificadores, paréntesis, etc.
     # =========================================================
     def visitIdentifierExpr(self, ctx):
-        return ctx.getText()
+        return self._alias(ctx.getText())
 
     def visitIdPrimary(self, ctx):
-        return ctx.getText()
+        return self._alias(ctx.getText())
 
     def visitId(self, ctx):
-        return ctx.getText()
+        return self._alias(ctx.getText())
 
     def visitPrimaryIdentifier(self, ctx):
-        return ctx.getText()
+        return self._alias(ctx.getText())
 
     def visitLiteralExpr(self, ctx):
         value = ctx.getText()
@@ -578,8 +575,10 @@ class TACGeneratorVisitor(CompiscriptVisitor):
             # obj.prop directo
             if "." in text and "(" not in text and "[" not in text:
                 base, prop = text.split(".", 1)
+                base = self._alias(base)
                 return self.gen_getprop(base, prop)
-            return text
+            # id simple
+            return self._alias(text)
 
         # new Clase(args)
         if text.startswith("new "):
@@ -611,6 +610,7 @@ class TACGeneratorVisitor(CompiscriptVisitor):
         # acceso obj.prop detectado por texto (evitar literales)
         if "." in text and "(" not in text and "[" not in text and not _looks_str(text):
             base, prop = text.split(".", 1)
+            base = self._alias(base)
             return self.gen_getprop(base, prop)
 
         t = self.new_temp()
@@ -712,7 +712,7 @@ class TACGeneratorVisitor(CompiscriptVisitor):
         # LHS id directo
         try:
             if hasattr(ctx, "Identifier") and ctx.Identifier() is not None:
-                left_text = ctx.Identifier().getText()
+                left_text = self._alias(ctx.Identifier().getText())
                 self.emit(f"{left_text} = {right}")
                 self.tm.free(right)
                 return left_text
@@ -725,6 +725,7 @@ class TACGeneratorVisitor(CompiscriptVisitor):
         # obj.prop
         if "." in lhs_text and "[" not in lhs_text and "(" not in lhs_text:
             base, prop = lhs_text.split(".", 1)
+            base = self._alias(base)
             self.gen_setprop(base, prop, right)
             self.tm.free(right)
             return lhs_text
@@ -743,9 +744,10 @@ class TACGeneratorVisitor(CompiscriptVisitor):
             raise RuntimeError("LHS no asignable (llamada/expresión)")
 
         # id simple
-        self.emit(f"{lhs_text} = {right}")
+        aliased_lhs = self._alias(lhs_text)
+        self.emit(f"{aliased_lhs} = {right}")
         self.tm.free(right)
-        return lhs_text
+        return aliased_lhs
 
     def visitAssignmentStmt(self, ctx):
         return self.visitAssignment(ctx)
@@ -773,32 +775,53 @@ class TACGeneratorVisitor(CompiscriptVisitor):
             self.emit(f"{l_else}:")
 
     def visitDoWhileStatement(self, ctx):
-        l_begin = self.new_label()
+        l_begin = self.new_label()   # inicio del cuerpo
+        l_cond  = self.new_label()   # punto para evaluar condición
+        l_end   = self.new_label()   # salida (para break)
+
+        # en do-while, 'continue' debe ir a l_cond (no al inicio del cuerpo)
+        self.continue_stack.append(l_cond)
+        self.break_stack.append(l_end)
+
         self.emit(f"{l_begin}:")
         self.visit(ctx.block())
+        self.emit(f"{l_cond}:")
         cond = self.visit(ctx.expression())
         cond = self._normalize_value_from_node(ctx.expression(), cond)
         self.emit(f"if {cond} != 0 goto {l_begin}")
         self.tm.free(cond)
+        self.emit(f"{l_end}:")
+
+        self.continue_stack.pop()
+        self.break_stack.pop()
 
     def visitForStatement(self, ctx):
+        # init
         if ctx.variableDeclaration():
             self.visit(ctx.variableDeclaration())
         elif ctx.assignment():
             self.visit(ctx.assignment())
 
-        l_begin = self.new_label()
-        l_end = self.new_label()
+        l_begin = self.new_label()   # chequeo/entrada
+        l_inc   = self.new_label()   # paso de incremento (target de 'continue')
+        l_end   = self.new_label()   # salida (target de 'break')
+
+        self.continue_stack.append(l_inc)
+        self.break_stack.append(l_end)
 
         self.emit(f"{l_begin}:")
+        # cond
         if ctx.expression(0):
             cond = self.visit(ctx.expression(0))
             cond = self._normalize_value_from_node(ctx.expression(0), cond)
             self.emit(f"if {cond} == 0 goto {l_end}")
             self.tm.free(cond)
 
+        # cuerpo
         self.visit(ctx.block())
 
+        # incremento
+        self.emit(f"{l_inc}:")
         if ctx.expression(1):
             inc_v = self.visit(ctx.expression(1))
             inc_v = self._normalize_value_from_node(ctx.expression(1), inc_v)
@@ -806,6 +829,9 @@ class TACGeneratorVisitor(CompiscriptVisitor):
 
         self.emit(f"goto {l_begin}")
         self.emit(f"{l_end}:")
+
+        self.continue_stack.pop()
+        self.break_stack.pop()
 
     def visitBreakStatement(self, ctx):
         if not self.break_stack:
@@ -820,6 +846,8 @@ class TACGeneratorVisitor(CompiscriptVisitor):
     def visitWhileStatement(self, ctx):
         l_begin = self.new_label()
         l_end = self.new_label()
+
+        # En while, colocar continue al punto de evaluación de condición
         self.continue_stack.append(l_begin)
         self.break_stack.append(l_end)
 
@@ -828,11 +856,168 @@ class TACGeneratorVisitor(CompiscriptVisitor):
         cond = self._normalize_value_from_node(ctx.expression(), cond)
         self.emit(f"if {cond} == 0 goto {l_end}")
         self.tm.free(cond)
+
         self.visit(ctx.block())
         self.emit(f"goto {l_begin}")
         self.emit(f"{l_end}:")
         self.continue_stack.pop()
         self.break_stack.pop()
+
+    # -------------------------------
+    # SWITCH (nuevo para Tarea 5)
+    # -------------------------------
+    def _extract_switch_cases(self, ctx):
+        """
+        Devuelve lista de tuplas (valueNode|None para default, blockNode)
+        Soporta nombres comunes de reglas; fallback recorre hijos.
+        """
+        cases = []
+
+        # Intentos 1: nodos estilo Java/C-like
+        for getter in ("switchBlock", "caseBlock", "cases", "switchBody"):
+            gb = getattr(ctx, getter, None)
+            if gb and callable(gb):
+                try:
+                    blk = gb()
+                    # profundizar un nivel si tiene .caseClause(s)
+                    for inner_name in ("caseClauses", "caseList", "clauses", "items"):
+                        gi = getattr(blk, inner_name, None)
+                        if gi and callable(gi):
+                            lst = gi()
+                            if lst:
+                                try:
+                                    elems = lst.caseClause()
+                                    if not isinstance(elems, list):
+                                        elems = [elems]
+                                except Exception:
+                                    elems = lst if isinstance(lst, list) else []
+                                for elem in elems:
+                                    try:
+                                        v = elem.expression()
+                                    except Exception:
+                                        v = None
+                                    try:
+                                        b = elem.block() or elem.statementBlock() or elem.statements()
+                                    except Exception:
+                                        b = elem
+                                    cases.append((v, b))
+                                return cases
+                except Exception:
+                    pass
+
+        # Intento 2: recorrido plano por hijos buscando "case" / "default"
+        children = [ctx.getChild(i) for i in range(getattr(ctx, "getChildCount", lambda: 0)())]
+        i = 0
+        while i < len(children):
+            ch = children[i]
+            txt = getattr(ch, "getText", lambda: "")()
+            if txt == "case":
+                v = None
+                try:
+                    v = children[i + 1]
+                except Exception:
+                    v = None
+                block = None
+                j = i + 2
+                while j < len(children) and getattr(children[j], "getText", lambda: ":")() != ":":
+                    j += 1
+                j += 1
+                if j < len(children):
+                    block = children[j]
+                cases.append((v, block))
+                i = j + 1
+                continue
+            if txt == "default":
+                block = None
+                j = i + 1
+                while j < len(children) and getattr(children[j], "getText", lambda: ":")() != ":":
+                    j += 1
+                j += 1
+                if j < len(children):
+                    block = children[j]
+                cases.append((None, block))
+                i = j + 1
+                continue
+            i += 1
+        return cases
+
+    def visitSwitchStatement(self, ctx):
+        """
+        switch (expr) { case v1: ...; break; case v2: ...; default: ... }
+        - selector en temporal
+        - etiquetas por caso + default + end
+        - fall-through natural si un case no hace 'break'
+        - 'break' salta al end gracias a break_stack
+        """
+        # selector
+        try:
+            sel_node = ctx.expression()
+        except Exception:
+            try:
+                sel_node = ctx.expr()
+            except Exception:
+                sel_node = None
+
+        sel_val = self.visit(sel_node) if sel_node is not None else "0"
+        sel_val = self._normalize_value_from_node(sel_node, sel_val)
+
+        # preparar labels
+        end_label = self.new_label()
+        self.break_stack.append(end_label)
+
+        cases = self._extract_switch_cases(ctx)
+
+        # etiquetas por caso
+        case_labels: List[str] = []
+        default_label: Optional[str] = None
+        for v, _b in cases:
+            if v is None:
+                default_label = self.new_label()
+            else:
+                case_labels.append(self.new_label())
+        if default_label is None:
+            default_label = self.new_label()
+
+        # dispatch (cadena de comparaciones)
+        idx = 0
+        for v, _b in cases:
+            if v is None:
+                continue
+            val_node = v
+            rhs = self.visit(val_node)
+            rhs = self._normalize_value_from_node(val_node, rhs)
+            tcmp = self.new_temp()
+            self.emit(f"{tcmp} = {sel_val} == {rhs}")
+            self.emit(f"if {tcmp} goto {case_labels[idx]}")
+            self.tm.free_many(tcmp, rhs)
+            idx += 1
+
+        self.emit(f"goto {default_label}")
+
+        # cuerpos
+        idx = 0
+        for v, body in cases:
+            if v is None:
+                continue
+            self.emit(f"{case_labels[idx]}:")
+            if body is not None:
+                self.visit(body)
+            idx += 1
+
+        # default
+        self.emit(f"{default_label}:")
+        default_body = None
+        for v, b in cases:
+            if v is None:
+                default_body = b
+                break
+        if default_body is not None:
+            self.visit(default_body)
+
+        # end
+        self.emit(f"{end_label}:")
+        self.break_stack.pop()
+        self.tm.free(sel_val)
 
     # =========================================================
     # Funciones / Métodos / Clases
@@ -859,11 +1044,11 @@ class TACGeneratorVisitor(CompiscriptVisitor):
             is_param = getattr(s, "is_param", False)
             if off is None:
                 continue
-            # convención simple: + para params, - para locals (palabras*4)
             base = "+{}".format((off + 1) * 4) if is_param else "-{}".format((off + 1) * 4)
             tag = "param" if is_param else "local"
             self.emit(f".{tag} {name}, [bp{base}]")
         self.emit(".endframe")
+
     def visitFunctionDeclaration(self, ctx):
         """
         Prologo de función/método con:
@@ -881,7 +1066,7 @@ class TACGeneratorVisitor(CompiscriptVisitor):
         is_method = bool(getattr(ctx, "_has_this", False)) or (self.current_class is not None)
         qual = f"{self.current_class}.{fname}" if is_method and self.current_class else fname
 
-        # parámetros crudos (por si necesitamos los nodos)
+        # parámetros crudos
         params = []
         try:
             if ctx.parameters():
@@ -892,6 +1077,10 @@ class TACGeneratorVisitor(CompiscriptVisitor):
         # aridad (+1 por this si es método)
         arity = len(params) + (1 if is_method else 0)
 
+        # --- nuevo: gestionar pila de alias por función
+        self._alias_stack.append(self.param_alias)
+        self.param_alias = {}
+
         self.current_function = fname
         self.return_seen = False
 
@@ -899,15 +1088,15 @@ class TACGeneratorVisitor(CompiscriptVisitor):
         self.emit(f"BeginFunc {fname} {arity}")
         self.emit(f"ActivationRecord {fname}")
 
-        # Cargar parámetros p_* = LoadParam i
+        # Cargar parámetros p_* = LoadParam i y registrar alias
         renameds = []
         for i, p in enumerate(params):
             try:
-                pname = p.Identifier().getText()
+                original = p.Identifier().getText()
             except Exception:
-                pname = f"p{i}"
-            if not pname.startswith("p_"):
-                pname = f"p_{pname}"
+                original = f"p{i}"
+            pname = original if original.startswith("p_") else f"p_{original}"
+            self.param_alias[original] = pname
             self.emit(f"{pname} = LoadParam {i}")
             renameds.append(pname)
 
@@ -915,7 +1104,7 @@ class TACGeneratorVisitor(CompiscriptVisitor):
         if is_method:
             self.emit(f"this = LoadParam {arity - 1}")
 
-        # Inyección especial para constructor: mapear p_<x> -> this.<x>
+        # Inyección especial para constructor
         if fname == "constructor" and is_method and renameds:
             for rp in renameds:
                 base = rp[2:] if rp.startswith("p_") else rp
@@ -930,7 +1119,7 @@ class TACGeneratorVisitor(CompiscriptVisitor):
         # cuerpo
         self.visit(ctx.block())
 
-        # return implícito si no hubo
+        # return implícito
         if not self.return_seen:
             self.emit("return")
 
@@ -939,6 +1128,9 @@ class TACGeneratorVisitor(CompiscriptVisitor):
 
         self.current_function = None
         self.return_seen = False
+
+        # --- restaurar alias al salir de la función
+        self.param_alias = self._alias_stack.pop()
         return None
 
     def visitCallExpr(self, ctx):
@@ -955,6 +1147,7 @@ class TACGeneratorVisitor(CompiscriptVisitor):
 
         if "." in callee:
             recv, meth = callee.split(".", 1)
+            recv = self._alias(recv)
             for v in reversed(arg_vals):
                 self.emit(f"param {v}")
                 self.tm.free(v)
