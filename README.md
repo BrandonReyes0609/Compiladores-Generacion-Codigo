@@ -1,6 +1,18 @@
 ```
 
+
+
 ```
+
+
+**Video Youtube**
+
+[https://youtu.be/nBeZIaB5ykk](https://youtu.be/nBeZIaB5ykk)
+
+
+![1763387034368](image/README/1763387034368.png)
+
+
 
 
 Código de preuba ejemplo1.cps
@@ -88,8 +100,6 @@ log = log + "Promedio (entero): " + toString(prom) + "\n";
 
 // Nota: 'log' contiene todas las salidas.
 ```
-
-
 
 Compilación de salida de Codigo Intermedio:
 

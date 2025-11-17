@@ -1,11 +1,16 @@
 # backend/mips/emitter.py
 """
-MIPSEmitter — Tarea 4 (selección de instrucciones TAC→MIPS)
------------------------------------------------------------
-Cambios clave (Opción B):
-- Si la función actual es 'main', el epílogo NO hace `jr $ra`.
-  En su lugar, restaura el frame y realiza `li $v0, 10` + `syscall`
-  para terminar el programa en MARS sin PC inválido.
+MIPSEmitter — Tarea 4 (TAC -> MIPS)
+
+Mejoras incluidas:
+- TODO el TAC de nivel superior (antes/entre/después de funciones) se ejecuta
+  dentro de _program_init, y 'main' lo invoca al iniciar.
+- Epílogo especial para 'main' (syscall 10).
+- Redirección de builtins: toString/printString/printInteger.
+- Blindaje de labels cuando el TAC define builtins (renombramos defs a $user).
+- Manejo de strings: soporta correctamente "\n" y "\t" sin doble-escapar.
+- Fallback: si no hay función 'main' pero sí top-level, se genera un 'main'
+  mínimo que invoca _program_init y luego hace syscall 10.
 """
 
 from .regalloc import RegAlloc
@@ -14,13 +19,22 @@ from .regalloc import RegAlloc
 class MIPSEmitter:
     SAVE_T_REGS = True  # caller-save para $t0..$t9
 
+    # Campos de la clase Estudiante (ajusta si cambian)
     _FIELD_OFFSETS = {
-        "nombre": 0,    # ptr (string)
-        "edad":   4,    # int
-        "color":  8,    # ptr (string)
-        "grado":  12,   # int
+        "nombre": 0,   # ptr (string)
+        "edad":   4,   # int
+        "color":  8,   # ptr (string)
+        "grado":  12,  # int
     }
     _STRING_FIELDS = {"nombre", "color"}
+
+    # Builtins del runtime
+    BUILTIN_REDIRECTS = {
+        "toString":    "__int_to_str",  # toString(i) -> __int_to_str(i)
+        "printString": "print_str",     # printString(s) -> print_str(s)
+        # printInteger se maneja aparte porque retorna el entero original
+    }
+    BUILTIN_NAMES = {"toString", "printString", "printInteger"}
 
     def __init__(self):
         self.lines = []
@@ -37,9 +51,14 @@ class MIPSEmitter:
         self._func_seen = {}
         self._func_mangle = {}
         self._seen_locals = set()
-
         self._stringish = set()
 
+        # Control de boot/top-level
+        self._have_boot = False
+        self._boot_label = "_program_init"
+        self._saw_main = False  # para fallback si no viene 'main' en TAC
+
+    # ---------- util ----------
     def emit(self, s): self.lines.append(s)
     def c(self, s): self.emit("# " + s)
     def emit_preamble(self): return
@@ -47,8 +66,18 @@ class MIPSEmitter:
         self.label_counter += 1
         return base + str(self.label_counter)
     def _align(self, n, a=8): return ((n + a - 1) // a) * a
-    def _esc(self, s):
-        return "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n") + "\""
+
+    def _esc(self, s: str) -> str:
+        """
+        Escapa comillas y backslashes, pero respeta secuencias \n y \t
+        para que el ensamblador las interprete como salto y tab reales.
+        """
+        # Primero escapamos backslash y comillas
+        s2 = s.replace("\\", "\\\\").replace("\"", "\\\"")
+        # Restauramos \n y \t (quedaron como "\\n" y "\\t")
+        s2 = s2.replace("\\\\n", "\\n").replace("\\\\t", "\\t")
+        return "\"" + s2 + "\""
+
     def _str_label(self, text):
         if text in self.str_pool: return self.str_pool[text]
         lab = "STR_" + str(self.str_count); self.str_count += 1
@@ -61,14 +90,26 @@ class MIPSEmitter:
             out.append(lab + ": .asciiz " + self._esc(s))
         return out
 
+    # ---------- funciones ----------
     def begin_function(self, name, local_bytes=0):
         orig = name
+
+        # Si el TAC define un builtin, renombramos su definición del usuario
+        if orig in self.BUILTIN_NAMES:
+            name = orig + "$user"
+
         if orig in self._func_seen:
             self._func_seen[orig] += 1
-            name = orig + "$" + str(self._func_seen[orig])
+            if name == orig:  # solo si no fue builtin renombrado
+                name = orig + "$" + str(self._func_seen[orig])
         else:
             self._func_seen[orig] = 0
+
+        # mapa lógico -> label real
         self._func_mangle[orig] = name
+
+        if orig == "main":
+            self._saw_main = True
 
         self.current_func = name
         self._loaded.clear()
@@ -82,15 +123,22 @@ class MIPSEmitter:
 
         self.emit("\n# --- Función " + name + " ---")
         self.emit(".text")
-        if name == "main": self.emit(".globl main")
+        if name == "main":
+            self.emit(".globl main")
         self.emit(name + ":")
         self.emit("  addiu $sp, $sp, -" + str(self.stack_size))
         self.emit("  sw   $ra, " + str(self.stack_size - 4) + "($sp)")
         self.emit("  sw   $fp, " + str(self.stack_size - 8) + "($sp)")
         self.emit("  addu $fp, $sp, $zero")
 
+        # 'main' arranca llamando al boot si existe
+        if name == "main" and self._have_boot:
+            self.emit("  # invocar bloque top-level")
+            self.emit("  jal " + self._boot_label)
+            self.emit("  nop")
+
     def end_function(self):
-        # flush de spills
+        # flush de spills (defensivo)
         for name, off in self.regs._spill_slot.items():
             reg = self.regs._name2reg.get(name)
             if reg is not None:
@@ -101,8 +149,8 @@ class MIPSEmitter:
         self.emit("  lw   $fp, " + str(self.stack_size - 8) + "($sp)")
         self.emit("  addiu $sp, $sp, " + str(self.stack_size))
 
-        # epílogo especial para main
         if self.current_func == "main":
+            # terminar programa
             self.emit("  li   $v0, 10")
             self.emit("  syscall")
         else:
@@ -113,6 +161,7 @@ class MIPSEmitter:
         self.regs.end_function()
         self._pending_args = []
 
+    # ---------- helpers de registros/inmediatos ----------
     def _is_temp(self, r): return isinstance(r, str) and r.startswith("$t")
     def _release_if_temp(self, r):
         if self._is_temp(r): self.regs.temp_release(r)
@@ -130,11 +179,11 @@ class MIPSEmitter:
 
     def _mat(self, x):
         if isinstance(x, int):
-            return self._imm(x)
-
+            return self._imm(int(x))
         if isinstance(x, str):
             s = x.strip()
 
+            # literal string
             if len(s) >= 2 and s[0] == '"' and s[-1] == '"':
                 lab = self._str_label(s[1:-1])
                 r = self.regs.temp_acquire()
@@ -148,46 +197,42 @@ class MIPSEmitter:
             if s.isdigit() or (s.startswith("-") and s[1:].isdigit()):
                 return self._imm(int(s))
 
-            if "." not in s and s in self._FIELD_OFFSETS:
-                alt = "p_" + s
-                if alt in self._seen_locals:
-                    regp = self.regs.get(alt, for_write=False)
-                    self._ensure_loaded(alt, regp)
-                    return regp
-                off = self._FIELD_OFFSETS[s]
-                r = self.regs.temp_acquire()
-                self.emit("  lw   " + r + ", " + str(off) + "($a0)")
-                return r
-
+            # acceso a this.campo o obj.campo
             if "." in s:
-                left, right = s.split(".", 1)
-                if left == "this":
-                    base = "$a0"; base_temp = False
+                parts = s.split(".", 1)
+                obj_name = parts[0]; field_name = parts[1]
+                if obj_name == "this":
+                    if field_name not in self._FIELD_OFFSETS:
+                        self.c("Campo no encontrado: " + field_name)
+                        return self._imm(0)
+                    off = self._FIELD_OFFSETS[field_name]
+                    r = self.regs.temp_acquire()
+                    self.emit("  lw   " + r + ", " + str(off) + "($a0)")
+                    if field_name in self._STRING_FIELDS:
+                        self._stringish.add(r)
+                    return r
                 else:
-                    base = self._mat(left); base_temp = self._is_temp(base)
-                off = self._FIELD_OFFSETS.get(right, 0)
-                r = self.regs.temp_acquire()
-                self.emit("  lw   " + r + ", " + str(off) + "(" + base + ")")
-                if base_temp: self.regs.temp_release(base)
-                return r
+                    reg_obj = self.regs.get(obj_name)
+                    if field_name not in self._FIELD_OFFSETS:
+                        self.c("Campo no encontrado: " + field_name)
+                        return self._imm(0)
+                    off = self._FIELD_OFFSETS[field_name]
+                    r = self.regs.temp_acquire()
+                    self.emit("  lw   " + r + ", " + str(off) + "(" + reg_obj + ")")
+                    if field_name in self._STRING_FIELDS:
+                        self._stringish.add(r)
+                    return r
 
-            reg = self.regs.get(s, for_write=False)
-            self._ensure_loaded(s, reg)
-            return reg
+            # variable normal
+            return self.regs.get(s)
+        return self._imm(0)
 
-        r = self.regs.temp_acquire()
-        self.emit("  move " + r + ", $zero")
-        return r
+    # ---------- instrucciones ----------
+    def emit_label(self, L):
+        self.emit(L + ":")
 
-    def _ensure_loaded(self, name, reg):
-        if name in self._loaded: return
-        if self.regs.has_spill_slot(name):
-            off = self.regs.spill_slot_offset(name)
-            self.emit("  lw   " + reg + ", " + str(off) + "($fp)")
-        self._loaded.add(name)
-
-    def emit_label(self, L): self.emit(L + ":")
-    def emit_goto(self, L): self.emit("  b " + L); self.emit("  nop")
+    def emit_goto(self, L):
+        self.emit("  b " + L); self.emit("  nop")
 
     def emit_ifz(self, src, L):
         r = self._mat(src)
@@ -195,35 +240,34 @@ class MIPSEmitter:
         self._release_if_temp(r)
 
     def emit_assign(self, dst, src):
-        if isinstance(dst, str) and ('.' not in dst) and (dst in self._FIELD_OFFSETS):
-            self.emit_setprop("this", dst, src)
-            return
-
-        if isinstance(dst, str): self._seen_locals.add(dst)
-        self._mark_stringish_if(dst, src)
-
-        rd = self.regs.get(dst, for_write=True)
+        if dst == "_": return
         rs = self._mat(src)
+        rd = self.regs.get(dst, for_write=True)
         self.emit("  addu " + rd + ", " + rs + ", $zero")
         self._release_if_temp(rs)
+        self._mark_stringish_if(dst, src)
 
     def _emit_cmp(self, op, rd, ra, rb):
-        if op == "==":
-            self.emit("  xor  " + rd + ", " + ra + ", " + rb)
-            self.emit("  sltiu " + rd + ", " + rd + ", 1")
+        if op == "<":
+            self.emit("  slt   " + rd + ", " + ra + ", " + rb)
+        elif op == "==":
+            rt = self.regs.temp_acquire()
+            self.emit("  xor   " + rt + ", " + ra + ", " + rb)
+            self.emit("  sltiu " + rd + ", " + rt + ", 1")
+            self.regs.temp_release(rt)
         elif op == "!=":
-            self.emit("  xor  " + rd + ", " + ra + ", " + rb)
-            self.emit("  sltu " + rd + ", $zero, " + rd)
-        elif op == "<":
-            self.emit("  slt  " + rd + ", " + ra + ", " + rb)
+            rt = self.regs.temp_acquire()
+            self.emit("  xor   " + rt + ", " + ra + ", " + rb)
+            self.emit("  sltu  " + rd + ", $zero, " + rt)
+            self.regs.temp_release(rt)
         elif op == "<=":
-            self.emit("  slt  " + rd + ", " + rb + ", " + ra)
-            self.emit("  xori " + rd + ", " + rd + ", 1")
+            self.emit("  slt   " + rd + ", " + rb + ", " + ra)
+            self.emit("  xori  " + rd + ", " + rd + ", 1")
         elif op == ">":
-            self.emit("  slt  " + rd + ", " + rb + ", " + ra)
+            self.emit("  slt   " + rd + ", " + rb + ", " + ra)
         elif op == ">=":
-            self.emit("  slt  " + rd + ", " + ra + ", " + rb)
-            self.emit("  xori " + rd + ", " + rd + ", 1")
+            self.emit("  slt   " + rd + ", " + ra + ", " + rb)
+            self.emit("  xori  " + rd + ", " + rd + ", 1")
 
     def _is_string_add(self, a, b):
         def is_lit(s):
@@ -250,7 +294,7 @@ class MIPSEmitter:
             self.emit("  div  " + ra + ", " + rb); self.emit("  mflo " + rd)
         elif op == "%":
             self.emit("  div  " + ra + ", " + rb); self.emit("  mfhi " + rd)
-        elif op in ("==", "!=", "<", "<=", ">", ">="):
+        elif op in ("==","!=","<","<=",">",">="):
             self._emit_cmp(op, rd, ra, rb)
         else:
             self.c("op no soportado: " + op)
@@ -263,7 +307,7 @@ class MIPSEmitter:
             self._release_if_temp(r)
         self.end_function()
 
-    # -------- llamadas --------
+    # ---------- llamadas ----------
     def _caller_save_push(self):
         if not self.SAVE_T_REGS: return 0
         size = 10 * 4
@@ -306,12 +350,48 @@ class MIPSEmitter:
             return real
         return fn_label_str
 
-    def emit_call(self, dst, fn, argc):
+    def _emit_builtin_printInteger(self, dst):
+        # caller-save
         self._caller_save_push()
 
+        # primer argumento (el entero)
+        args = sorted(self._pending_args, key=lambda x: x[0])
+        _, reg_val = args[0]
+
+        # __int_to_str
+        self.emit("  addu $a0, " + reg_val + ", $zero")
+        self.emit("  jal __int_to_str"); self.emit("  nop")
+
+        # print_str
+        self.emit("  addu $a0, $v0, $zero")
+        self.emit("  jal print_str"); self.emit("  nop")
+
+        # retorno = entero original
+        self.emit("  addu $v0, " + reg_val + ", $zero")
+
+        self._caller_save_pop()
+        self._release_if_temp(reg_val)
+
+        if dst:
+            rd = self.regs.get(dst, for_write=True)
+            self.emit("  addu " + rd + ", $v0, $zero")
+
+        self._pending_args = []
+
+    def emit_call(self, dst, fn, argc):
         fn_str = str(fn)
+        if fn_str in self.BUILTIN_REDIRECTS:
+            fn_str = self.BUILTIN_REDIRECTS[fn_str]
+
+        if fn == "printInteger":
+            self._emit_builtin_printInteger(dst)
+            return
+
+        self._caller_save_push()
+
         fn_label = self._maybe_reorder_for_method(fn_str)
 
+        # a0..a3 y resto en stack
         args = sorted(self._pending_args, key=lambda x: x[0])
         a_regs, extra_regs = [], []
         for (idx, reg) in args:
@@ -328,74 +408,65 @@ class MIPSEmitter:
         for (idx, r) in a_regs:
             self.emit("  addu $a" + str(idx) + ", " + r + ", $zero")
 
-        mangled = self._func_mangle.get(fn_label, fn_label)
-        self.emit("  jal " + mangled); self.emit("  nop")
+        for (_, reg) in args:
+            self._release_if_temp(reg)
 
-        if extra_size > 0: self.emit("  addiu $sp, $sp, " + str(extra_size))
+        if fn_label in self._func_mangle:
+            self.emit("  jal " + self._func_mangle[fn_label])
+        else:
+            self.emit("  jal " + fn_label)
+        self.emit("  nop")
+
+        if extra_regs:
+            self.emit("  addiu $sp, $sp, " + str(extra_size))
+
         self._caller_save_pop()
-
-        for (_, r) in a_regs: self._release_if_temp(r)
-        for r in extra_regs:  self._release_if_temp(r)
 
         if dst:
             rd = self.regs.get(dst, for_write=True)
             self.emit("  addu " + rd + ", $v0, $zero")
-            if isinstance(fn_label, str) and (fn_label.endswith("toString") or fn_label == "__int_to_str" or fn_label == "toString"):
-                self._stringish.add(dst)
 
         self._pending_args = []
 
-    def _in_constructor(self) -> bool:
-        n = self.current_func or ""
-        return n.startswith("constructor")
-
-    def emit_loadparam(self, dst, index):
-        if isinstance(dst, str):
-            self._seen_locals.add(dst)
+    def emit_loadparam(self, dst, idx):
         rd = self.regs.get(dst, for_write=True)
-
-        adj = int(index)
-        if self._in_constructor():
-            adj += 1
-
-        if 0 <= adj <= 3:
-            self.emit("  addu " + rd + ", $a" + str(adj) + ", $zero")
+        if idx <= 3:
+            self.emit("  addu " + rd + ", $a" + str(idx) + ", $zero")
         else:
-            off = self.stack_size + 4 * (adj - 4)
+            off = (idx - 4) * 4 + self.stack_size
             self.emit("  lw   " + rd + ", " + str(off) + "($fp)")
 
     def emit_getprop(self, dst, obj, field):
-        rd = self.regs.get(dst, for_write=True)
         if obj == "this":
-            rbase = "$a0"; base_temp = False
+            off = self._FIELD_OFFSETS.get(field, 0)
+            rd = self.regs.get(dst, for_write=True)
+            self.emit("  lw   " + rd + ", " + str(off) + "($a0)")
         else:
-            rbase = self._mat(obj); base_temp = self._is_temp(rbase)
-        off = self._FIELD_OFFSETS.get(field, 0)
-        self.emit("  lw   " + rd + ", " + str(off) + "(" + rbase + ")")
-        if base_temp: self.regs.temp_release(rbase)
-        if field in self._STRING_FIELDS:
-            self._stringish.add(dst)
+            ro = self.regs.get(obj)
+            off = self._FIELD_OFFSETS.get(field, 0)
+            rd = self.regs.get(dst, for_write=True)
+            self.emit("  lw   " + rd + ", " + str(off) + "(" + ro + ")")
+        if field in self._STRING_FIELDS: self._stringish.add(dst)
 
     def emit_setprop(self, obj, field, src):
+        rs = self._mat(src)
         if obj == "this":
-            rbase = "$a0"; base_temp = False
+            off = self._FIELD_OFFSETS.get(field, 0)
+            self.emit("  sw   " + rs + ", " + str(off) + "($a0)")
         else:
-            rbase = self._mat(obj); base_temp = self._is_temp(rbase)
-        rsrc = self._mat(src)
-        off = self._FIELD_OFFSETS.get(field, 0)
-        self.emit("  sw   " + rsrc + ", " + str(off) + "(" + rbase + ")")
-        if base_temp: self.regs.temp_release(rbase)
-        self._release_if_temp(rsrc)
+            ro = self.regs.get(obj)
+            off = self._FIELD_OFFSETS.get(field, 0)
+            self.emit("  sw   " + rs + ", " + str(off) + "(" + ro + ")")
+        self._release_if_temp(rs)
 
     def emit_new(self, dst, cname):
-        size = len(self._FIELD_OFFSETS) * 4
-        r = self.regs.get(dst, for_write=True)
-        self.emit("  li   $v0, 9")
-        self.emit("  li   $a0, " + str(size))
-        self.emit("  syscall")
-        self.emit("  move " + r + ", $v0")
+        mapper = {"Estudiante": "newEstudiante"}
+        fn = mapper.get(cname, "new" + cname)
+        self.emit_call(dst, fn, len(self._pending_args))
 
-    def from_quads(self, quads):
+    # ---------- driver ----------
+    def _emit_quads_sequence(self, quads):
+        """Emite una secuencia suponiendo que YA estamos dentro de una función."""
         for q in quads:
             op = q[0]
             if op == "BeginFunc":
@@ -437,6 +508,87 @@ class MIPSEmitter:
             if op == "Raw":
                 self.c(q[1]); continue
             self.c("opcode TAC no soportado: " + str(q))
+
+    def from_quads(self, quads):
+        """
+        Recolecta todos los quads fuera de funciones (antes/entre/después)
+        y los emite como _program_init; luego emite cada función.
+        """
+        top = []
+        functions = []
+
+        inside = False
+        current = []
+
+        for q in quads:
+            if q and q[0] == "BeginFunc":
+                # si veníamos acumulando 'current' como función previa, guárdala
+                if inside and current:
+                    functions.append(current)
+                    current = []
+                inside = True
+                current = [q]
+                continue
+
+            if q and q[0] == "EndFunc":
+                if inside:
+                    current.append(q)
+                    functions.append(current)
+                    current = []
+                    inside = False
+                else:
+                    # EndFunc suelto: ignóralo defensivamente
+                    pass
+                continue
+
+            if inside:
+                current.append(q)
+            else:
+                top.append(q)
+
+        # si terminó dentro de una función sin EndFunc (defensivo)
+        if inside and current:
+            functions.append(current)
+
+        # Emite el boot si hay TAC top-level
+        if top:
+            self._have_boot = True
+            self.emit("\n# --- Función " + self._boot_label + " ---")
+            self.emit(".text")
+            self.emit(self._boot_label + ":")
+            
+            # Frame de _program_init
+            spill_hint = self.regs.start_function(spill_bytes_hint=256)
+            self.stack_size = self._align(spill_hint + 8)
+            self.emit("  addiu $sp, $sp, -" + str(self.stack_size))
+            self.emit("  sw   $ra, " + str(self.stack_size - 4) + "($sp)")
+            self.emit("  sw   $fp, " + str(self.stack_size - 8) + "($sp)")
+            self.emit("  addu $fp, $sp, $zero")
+            
+            # Emitir el código del top-level
+            self.current_func = self._boot_label
+            self._emit_quads_sequence(top)
+            
+            # Epilogo de _program_init
+            self.emit("  lw   $ra, " + str(self.stack_size - 4) + "($sp)")
+            self.emit("  lw   $fp, " + str(self.stack_size - 8) + "($sp)")
+            self.emit("  addiu $sp, $sp, " + str(self.stack_size))
+            self.emit("  jr   $ra")
+            self.emit("  nop")
+            
+            self.current_func = None
+            self.regs.end_function()
+
+        # Emite todas las funciones en orden
+        for fn_chunk in functions:
+            self._emit_quads_sequence(fn_chunk)
+
+        # Fallback: si hubo top-level pero no hubo 'main', genera un main mínimo
+        if self._have_boot and not self._saw_main:
+            self.begin_function("main", 0)
+            self.emit("  # main generado (fallback) -> invoca _program_init y sale")
+            self.emit("  jal " + self._boot_label); self.emit("  nop")
+            self.emit_return(None)  # esto agregará syscall 10 por ser 'main'
 
     def build(self):
         out = []

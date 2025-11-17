@@ -4,16 +4,13 @@
 # Convenciones:
 #   - $a0..$a3: args
 #   - $v0: retorno
-#   - Cada función usa prólogo/epílogo simples con $fp/$ra
 #   - Strings: ASCII C-like (terminados en '\0')
 # ============================================================
 
         .text
 
 # ------------------------------------------------------------
-# __alloc(nbytes) -> ptr
-#   Reserva nbytes con sbrk (syscall 9)
-#   a0=nbytes, v0=puntero
+# __alloc(nbytes) -> ptr   (syscall 9)
 # ------------------------------------------------------------
         .globl __alloc
 __alloc:
@@ -33,7 +30,6 @@ __alloc:
 
 # ------------------------------------------------------------
 # __strlen(s) -> len
-#   a0=char*; v0=length (sin contar '\0')
 # ------------------------------------------------------------
         .globl __strlen
 __strlen:
@@ -53,8 +49,6 @@ __strlen_end:
 
 # ------------------------------------------------------------
 # __strcpy(dst, src) -> dst
-#   Copia incluyendo '\0'
-#   a0=dst, a1=src
 # ------------------------------------------------------------
         .globl __strcpy
 __strcpy:
@@ -76,7 +70,6 @@ __strcpy_end:
 
 # ------------------------------------------------------------
 # __strcat_new(a, b) -> nuevo string "a"+"b"
-#   a0=ptr a, a1=ptr b ; v0=ptr nuevo
 # ------------------------------------------------------------
         .globl __strcat_new
 __strcat_new:
@@ -128,7 +121,6 @@ __strcat_new:
 
 # ------------------------------------------------------------
 # __int_to_str(i) -> ptr
-#   Convierte entero con signo a string nuevo (buffer 32 bytes).
 # ------------------------------------------------------------
         .globl __int_to_str
 __int_to_str:
@@ -190,7 +182,7 @@ __i2s_done:
         nop
 
 # ------------------------------------------------------------
-# print_str(s) y println_str(s)
+# print_str(s) y println_str(s) (runtimes internos)
 # ------------------------------------------------------------
         .globl print_str
 print_str:
@@ -206,11 +198,10 @@ println_str:
         sw    $fp,  8($sp)
         addu  $fp, $sp, $zero
 
-        li    $v0, 4
+        li    $v0, 4      # print s
         syscall
-
         la    $a0, __rt_nl
-        li    $v0, 4
+        li    $v0, 4      # print "\n"
         syscall
 
         lw    $ra, 12($sp)
@@ -220,9 +211,46 @@ println_str:
         nop
 
 # ------------------------------------------------------------
-# newEstudiante(arg0, arg1, arg2) -> this
-#   Reserva 16 bytes y llama a constructor$1(this, arg0, arg1, arg2)
-#   Campos: nombre(ptr), edad(int), color(ptr), grado(int)
+# WRAPPERS esperados por tu TAC:
+#   - printString(s): imprime s y retorna 0 (para no chocar con *$user)
+#   - printInteger(i): imprime i y retorna 0
+# ------------------------------------------------------------
+        .globl printString
+printString:
+        addiu $sp, $sp, -16
+        sw    $ra, 12($sp)
+        sw    $fp,  8($sp)
+        addu  $fp, $sp, $zero
+
+        li    $v0, 4      # syscall print_string
+        syscall
+        move  $v0, $zero  # return 0
+
+        lw    $ra, 12($sp)
+        lw    $fp,  8($sp)
+        addiu $sp, $sp, 16
+        jr    $ra
+        nop
+
+        .globl printInteger
+printInteger:
+        addiu $sp, $sp, -16
+        sw    $ra, 12($sp)
+        sw    $fp,  8($sp)
+        addu  $fp, $sp, $zero
+
+        li    $v0, 1      # syscall print_int
+        syscall
+        move  $v0, $zero  # return 0
+
+        lw    $ra, 12($sp)
+        lw    $fp,  8($sp)
+        addiu $sp, $sp, 16
+        jr    $ra
+        nop
+
+# ------------------------------------------------------------
+# newEstudiante(arg0,arg1,arg2) -> this
 # ------------------------------------------------------------
         .globl newEstudiante
 newEstudiante:
