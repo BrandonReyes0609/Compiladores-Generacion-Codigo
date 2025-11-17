@@ -106,6 +106,12 @@ class MIPSEmitter:
         self.emit("  addu $fp, $sp, $zero")
 
     def end_function(self):
+        # ---- Flush final: guardar registros sucios en sus spill slots ----
+        for name, off in self.regs._spill_slot.items():
+            reg = self.regs._name2reg.get(name)
+            if reg is not None:
+                self.emit(f"  sw   {reg}, {off}($fp)")
+
         self.emit("  lw   $ra, " + str(self.stack_size - 4) + "($sp)")
         self.emit("  lw   $fp, " + str(self.stack_size - 8) + "($sp)")
         self.emit("  addiu $sp, $sp, " + str(self.stack_size))
@@ -424,6 +430,18 @@ class MIPSEmitter:
         if base_temp: self.regs.temp_release(rbase)
         self._release_if_temp(rsrc)
 
+
+    def emit_new(self, dst, cname):
+        # Cada objeto ocupa N bytes según los campos definidos
+        size = len(self._FIELD_OFFSETS) * 4    # 4 bytes por campo
+        r = self.regs.get(dst, for_write=True)
+
+        # syscall sbrk (9) reserva memoria
+        self.emit("  li   $v0, 9")            # sbrk
+        self.emit("  li   $a0, " + str(size)) # bytes a reservar
+        self.emit("  syscall")
+        self.emit("  move " + r + ", $v0")     # resultado en dst
+
     # -------- driver principal --------
     def from_quads(self, quads):
         for q in quads:
@@ -460,6 +478,11 @@ class MIPSEmitter:
                 _, d, i = q; self.emit_loadparam(d, i); continue
             if op == "GetProp":
                 _, d, o, f = q; self.emit_getprop(d, o, f); continue
+            if op == "New":
+                # q = ("New", dst, class_name)
+                _, dst, cname = q
+                self.emit_new(dst, cname)
+                continue
             if op == "SetProp":
                 _, o, f, s = q; self.emit_setprop(o, f, s); continue
             if op == "Raw":

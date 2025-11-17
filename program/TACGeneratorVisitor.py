@@ -387,21 +387,25 @@ class TACGeneratorVisitor(CompiscriptVisitor):
 
     # ---------- NEW: Soporte de 'new Clase(...)' ----------
     def _emit_new_object(self, class_name: str, arg_nodes: List) -> str:
-        """
-        t_obj = Clase new N
-        (opcional) t_dummy = call method constructor, N+1  (param this al final)
-        """
+        # 1) Generar el new correcto para el backend MIPS
         t_obj = self.new_temp()
-        self.emit(f"{t_obj} = {class_name} new {len(arg_nodes)}")
+        self.emit(f"{t_obj} = new {class_name}")
+
+        # 2) Si hay constructor, llamar como método
         if arg_nodes:
             vals = [self.visit(n) for n in arg_nodes]
+            # pasar argumentos reales
             for v in reversed(vals):
                 self.emit(f"param {v}")
                 self.tm.free(v)
+            # pasar this al final
             self.emit(f"param {t_obj}")
-            t_dummy = self.new_temp()
-            self.emit(f"{t_dummy} = call method constructor, {len(vals)+1}")
-            self.tm.free(t_dummy)
+
+            t_call = self.new_temp()
+            # EXACTO lo que el parser MIPS reconoce
+            self.emit(f"{t_call} = call method constructor, {len(vals)+1}")
+            self.tm.free(t_call)
+
         return t_obj
 
     # =========================================================

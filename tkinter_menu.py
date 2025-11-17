@@ -386,14 +386,15 @@ class CompiscriptIDE(tk.Tk):
             messagebox.showerror("Guardar", f"No se pudo guardar:\n{e}")
 
     def guardar_assembler(self):
-        f = filedialog.asksaveasfilename(defaultextension=".asm", filetypes=[("Assembler", "*.asm")])
+        f = filedialog.asksaveasfilename(defaultextension=".s", filetypes=[("MIPS Assembly", "*.s")])
         if not f:
             return
         try:
             Path(f).write_text(self.txt_asm.get("1.0", "end-1c"), encoding="utf-8")
-            self._msg(f"Assembler guardado en: {f}\n")
+            self._msg(f"Código MIPS guardado en: {f}\n")
         except Exception as e:
             messagebox.showerror("Assembler", f"No se pudo guardar:\n{e}")
+
 
     def cargar_cgt(self):
         f = filedialog.askopenfilename(
