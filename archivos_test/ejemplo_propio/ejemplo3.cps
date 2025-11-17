@@ -1,4 +1,3 @@
-Hola compañeros. Buenos días. Les comparto el archivo .cps que Bidkar va a utilizar para la calificación del proyecto final. Cabe mencionar que tienen que cambiar los nombres de los estudiantes por los suyos. 
 // Helpers "declarados" en el lenguaje; la implementación real la hace el backend MIPS.
 function toString(x: integer): string {
   return "";

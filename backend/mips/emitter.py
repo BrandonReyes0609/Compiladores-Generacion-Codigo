@@ -2,20 +2,10 @@
 """
 MIPSEmitter — Tarea 4 (selección de instrucciones TAC→MIPS)
 -----------------------------------------------------------
-Novedades clave en esta versión:
-- Respeta $a0 como 'this' en cualquier constructor* (LoadParam i -> $a{i+1}).
-- Concatenación de strings en el emisor: si el '+' involucra literales o
-  valores marcados como "stringish", reescribe a:
-      Param a; Param b; dst = Call __strcat_new, 2
-  (usa runtime.s).
-- Marca automática de variables "stringish":
-    * asignaciones desde literales "..."
-    * GetProp de campos string (nombre, color)
-    * resultados de Call a toString / __int_to_str
-    * concatenaciones string (+)
-- Soporte de getprop/setprop con offsets fijos por campo.
-- Reordenamiento de argumentos para 'call method X' (último Param = this -> $a0).
-- Caller-save de $t0..$t9 alrededor de cada jal.
+Cambios clave (Opción B):
+- Si la función actual es 'main', el epílogo NO hace `jr $ra`.
+  En su lugar, restaura el frame y realiza `li $v0, 10` + `syscall`
+  para terminar el programa en MARS sin PC inválido.
 """
 
 from .regalloc import RegAlloc
@@ -24,7 +14,6 @@ from .regalloc import RegAlloc
 class MIPSEmitter:
     SAVE_T_REGS = True  # caller-save para $t0..$t9
 
-    # Layout de ejemplo para 'Persona/Estudiante' (ajusta si la clase cambia)
     _FIELD_OFFSETS = {
         "nombre": 0,    # ptr (string)
         "edad":   4,    # int
@@ -49,10 +38,8 @@ class MIPSEmitter:
         self._func_mangle = {}
         self._seen_locals = set()
 
-        # rastreo simple de "variables que son string"
         self._stringish = set()
 
-    # -------- utilidades base --------
     def emit(self, s): self.lines.append(s)
     def c(self, s): self.emit("# " + s)
     def emit_preamble(self): return
@@ -67,7 +54,6 @@ class MIPSEmitter:
         lab = "STR_" + str(self.str_count); self.str_count += 1
         self.str_pool[text] = lab; return lab
 
-    # -------- secciones/data --------
     def _emit_data(self):
         if not self.str_pool: return []
         out = [".data"]
@@ -75,9 +61,7 @@ class MIPSEmitter:
             out.append(lab + ": .asciiz " + self._esc(s))
         return out
 
-    # -------- prólogo/epílogo --------
     def begin_function(self, name, local_bytes=0):
-        # mangle simple para sobrecargas (constructor, etc.)
         orig = name
         if orig in self._func_seen:
             self._func_seen[orig] += 1
@@ -106,65 +90,64 @@ class MIPSEmitter:
         self.emit("  addu $fp, $sp, $zero")
 
     def end_function(self):
-        # ---- Flush final: guardar registros sucios en sus spill slots ----
+        # flush de spills
         for name, off in self.regs._spill_slot.items():
             reg = self.regs._name2reg.get(name)
             if reg is not None:
                 self.emit(f"  sw   {reg}, {off}($fp)")
 
+        # restaurar frame
         self.emit("  lw   $ra, " + str(self.stack_size - 4) + "($sp)")
         self.emit("  lw   $fp, " + str(self.stack_size - 8) + "($sp)")
         self.emit("  addiu $sp, $sp, " + str(self.stack_size))
-        self.emit("  jr   $ra"); self.emit("  nop")
+
+        # epílogo especial para main
+        if self.current_func == "main":
+            self.emit("  li   $v0, 10")
+            self.emit("  syscall")
+        else:
+            self.emit("  jr   $ra")
+            self.emit("  nop")
+
         self.current_func = None
         self.regs.end_function()
         self._pending_args = []
 
-    # -------- helpers de temporales --------
     def _is_temp(self, r): return isinstance(r, str) and r.startswith("$t")
     def _release_if_temp(self, r):
         if self._is_temp(r): self.regs.temp_release(r)
 
-    # -------- materialización segura --------
     def _imm(self, val):
         r = self.regs.temp_acquire()
         self.emit("  li   " + r + ", " + str(val))
         return r
 
     def _mark_stringish_if(self, dst, src_token):
-        # literal
         if isinstance(src_token, str):
             s = src_token.strip()
             if len(s) >= 2 and s[0] == '"' and s[-1] == '"':
                 self._stringish.add(dst)
 
     def _mat(self, x):
-        """
-        Materializa 'x' (inmediato, string, nombre TAC o 'obj.campo') en un registro.
-        """
         if isinstance(x, int):
             return self._imm(x)
 
         if isinstance(x, str):
             s = x.strip()
 
-            # literal string
             if len(s) >= 2 and s[0] == '"' and s[-1] == '"':
                 lab = self._str_label(s[1:-1])
                 r = self.regs.temp_acquire()
                 self.emit("  la   " + r + ", " + lab)
                 return r
 
-            # 'this'
             if s == "this": return "$a0"
 
-            # bool/int inmediatos
             if s == "true":  return self._imm(1)
             if s == "false": return self._imm(0)
             if s.isdigit() or (s.startswith("-") and s[1:].isdigit()):
                 return self._imm(int(s))
 
-            # nombre igual a campo (p_<campo> preferente)
             if "." not in s and s in self._FIELD_OFFSETS:
                 alt = "p_" + s
                 if alt in self._seen_locals:
@@ -176,7 +159,6 @@ class MIPSEmitter:
                 self.emit("  lw   " + r + ", " + str(off) + "($a0)")
                 return r
 
-            # acceso obj.campo
             if "." in s:
                 left, right = s.split(".", 1)
                 if left == "this":
@@ -189,12 +171,10 @@ class MIPSEmitter:
                 if base_temp: self.regs.temp_release(base)
                 return r
 
-            # nombre TAC
             reg = self.regs.get(s, for_write=False)
             self._ensure_loaded(s, reg)
             return reg
 
-        # fallback 0
         r = self.regs.temp_acquire()
         self.emit("  move " + r + ", $zero")
         return r
@@ -206,7 +186,6 @@ class MIPSEmitter:
             self.emit("  lw   " + reg + ", " + str(off) + "($fp)")
         self._loaded.add(name)
 
-    # -------- emisión básica --------
     def emit_label(self, L): self.emit(L + ":")
     def emit_goto(self, L): self.emit("  b " + L); self.emit("  nop")
 
@@ -216,7 +195,6 @@ class MIPSEmitter:
         self._release_if_temp(r)
 
     def emit_assign(self, dst, src):
-        # LHS campo simple -> this.campo = expr
         if isinstance(dst, str) and ('.' not in dst) and (dst in self._FIELD_OFFSETS):
             self.emit_setprop("this", dst, src)
             return
@@ -248,19 +226,15 @@ class MIPSEmitter:
             self.emit("  xori " + rd + ", " + rd + ", 1")
 
     def _is_string_add(self, a, b):
-        # literal inmediato
         def is_lit(s):
             return isinstance(s, str) and len(s) >= 2 and s[0] == '"' and s[-1] == '"'
         if is_lit(a) or is_lit(b): return True
-        # variables marcadas como stringish
         if isinstance(a, str) and a in self._stringish: return True
         if isinstance(b, str) and b in self._stringish: return True
         return False
 
     def emit_binary(self, op, dst, a, b):
-        # concatenación de strings
         if op == "+" and self._is_string_add(a, b):
-            # Congelar parámetros y llamar a runtime.__strcat_new
             self.emit_param(a)
             self.emit_param(b)
             self.emit_call(dst, "__strcat_new", 2)
@@ -289,7 +263,7 @@ class MIPSEmitter:
             self._release_if_temp(r)
         self.end_function()
 
-    # -------- caller-save / llamadas --------
+    # -------- llamadas --------
     def _caller_save_push(self):
         if not self.SAVE_T_REGS: return 0
         size = 10 * 4
@@ -307,12 +281,6 @@ class MIPSEmitter:
         return size
 
     def emit_param(self, idx_or_src, maybe_src=None):
-        """
-        Congela el valor del parámetro en este momento.
-        Soporta:
-          Param <src>            -> índice secuencial
-          Param <i>, <src>       -> índice explícito
-        """
         if maybe_src is None:
             idx = len(self._pending_args)
             src = idx_or_src
@@ -326,10 +294,6 @@ class MIPSEmitter:
         self._pending_args.append((idx, r_freeze))
 
     def _maybe_reorder_for_method(self, fn_label_str):
-        """
-        Si 'fn_label_str' es 'method X', reordena params para que el ÚLTIMO Param
-        sea el receptor (this) y vaya en $a0.
-        """
         if isinstance(fn_label_str, str) and fn_label_str.startswith("method "):
             real = fn_label_str.split(" ", 1)[1].strip()
             if self._pending_args:
@@ -343,14 +307,11 @@ class MIPSEmitter:
         return fn_label_str
 
     def emit_call(self, dst, fn, argc):
-        # caller-save
         self._caller_save_push()
 
-        # soporte 'method '
         fn_str = str(fn)
         fn_label = self._maybe_reorder_for_method(fn_str)
 
-        # preparar a0..a3 + extras
         args = sorted(self._pending_args, key=lambda x: x[0])
         a_regs, extra_regs = [], []
         for (idx, reg) in args:
@@ -379,13 +340,11 @@ class MIPSEmitter:
         if dst:
             rd = self.regs.get(dst, for_write=True)
             self.emit("  addu " + rd + ", $v0, $zero")
-            # Heurística: si la función suena a toString/int->string, marca stringish
             if isinstance(fn_label, str) and (fn_label.endswith("toString") or fn_label == "__int_to_str" or fn_label == "toString"):
                 self._stringish.add(dst)
 
         self._pending_args = []
 
-    # -------- TAC específicos --------
     def _in_constructor(self) -> bool:
         n = self.current_func or ""
         return n.startswith("constructor")
@@ -395,7 +354,6 @@ class MIPSEmitter:
             self._seen_locals.add(dst)
         rd = self.regs.get(dst, for_write=True)
 
-        # En constructores, los parámetros del usuario empiezan en $a1 (a0=this)
         adj = int(index)
         if self._in_constructor():
             adj += 1
@@ -415,7 +373,6 @@ class MIPSEmitter:
         off = self._FIELD_OFFSETS.get(field, 0)
         self.emit("  lw   " + rd + ", " + str(off) + "(" + rbase + ")")
         if base_temp: self.regs.temp_release(rbase)
-        # marcar stringish si el campo es string
         if field in self._STRING_FIELDS:
             self._stringish.add(dst)
 
@@ -430,19 +387,14 @@ class MIPSEmitter:
         if base_temp: self.regs.temp_release(rbase)
         self._release_if_temp(rsrc)
 
-
     def emit_new(self, dst, cname):
-        # Cada objeto ocupa N bytes según los campos definidos
-        size = len(self._FIELD_OFFSETS) * 4    # 4 bytes por campo
+        size = len(self._FIELD_OFFSETS) * 4
         r = self.regs.get(dst, for_write=True)
-
-        # syscall sbrk (9) reserva memoria
-        self.emit("  li   $v0, 9")            # sbrk
-        self.emit("  li   $a0, " + str(size)) # bytes a reservar
+        self.emit("  li   $v0, 9")
+        self.emit("  li   $a0, " + str(size))
         self.emit("  syscall")
-        self.emit("  move " + r + ", $v0")     # resultado en dst
+        self.emit("  move " + r + ", $v0")
 
-    # -------- driver principal --------
     def from_quads(self, quads):
         for q in quads:
             op = q[0]
@@ -479,10 +431,7 @@ class MIPSEmitter:
             if op == "GetProp":
                 _, d, o, f = q; self.emit_getprop(d, o, f); continue
             if op == "New":
-                # q = ("New", dst, class_name)
-                _, dst, cname = q
-                self.emit_new(dst, cname)
-                continue
+                _, dst, cname = q; self.emit_new(dst, cname); continue
             if op == "SetProp":
                 _, o, f, s = q; self.emit_setprop(o, f, s); continue
             if op == "Raw":
