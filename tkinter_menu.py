@@ -320,6 +320,7 @@ class CompiscriptIDE(tk.Tk):
         m_pr.add_command(label="Grabar", command=self.guardar_archivo, accelerator="Ctrl+S")
         m_pr.add_command(label="Nuevo", command=self.nuevo_archivo, accelerator="Ctrl+N")
         m_pr.add_command(label="Grabar Assembler", command=self.guardar_assembler)
+        m_pr.add_command(label="Grabar ASM + runtime (MARS)", command=self.guardar_assembler_con_runtime)
         m_pr.add_separator()
         m_pr.add_command(label="Compilar", command=self.compilar, accelerator="F5")
         mb.add_cascade(label="Archivo de Prueba", menu=m_pr)
@@ -392,6 +393,65 @@ class CompiscriptIDE(tk.Tk):
         try:
             Path(f).write_text(self.txt_asm.get("1.0", "end-1c"), encoding="utf-8")
             self._msg(f"Código MIPS guardado en: {f}\n")
+        except Exception as e:
+            messagebox.showerror("Assembler", f"No se pudo guardar:\n{e}")
+
+    # ===== Helpers para runtime MIPS =====
+    def _runtime_path(self) -> Path:
+        """
+        Devuelve la ruta absoluta a backend/mips/runtime.s
+        (ajusta si tu estructura de carpetas es distinta).
+        """
+        here = Path(__file__).resolve().parent
+        return here / "backend" / "mips" / "runtime.s"
+
+
+    def guardar_assembler_con_runtime(self):
+        """
+        Guarda un solo .s que contiene:
+        - Primero: backend/mips/runtime.s
+        - Luego: el ASM generado (pestaña 'Código Assembler')
+        Listo para abrir directamente en MARS.
+        """
+        asm_user = self.txt_asm.get("1.0", "end-1c")
+        if not asm_user.strip():
+            messagebox.showwarning(
+                "Assembler",
+                "No hay código assembler generado (pestaña 'Código Assembler' está vacía)."
+            )
+            return
+
+        # Leer runtime.s
+        try:
+            rt_path = self._runtime_path()
+            runtime_code = rt_path.read_text(encoding="utf-8")
+        except Exception as e:
+            messagebox.showerror(
+                "Assembler",
+                f"No se pudo leer runtime.s en:\n{self._runtime_path()}\n\nDetalle: {e}"
+            )
+            return
+
+        # Combinar: runtime primero, luego ASM generado
+        combined = (
+            runtime_code.rstrip() +
+            "\n\n# ---- Código generado por el compilador ----\n\n" +
+            asm_user.strip() +
+            "\n"
+        )
+
+        # Elegir dónde guardar
+        f = filedialog.asksaveasfilename(
+            defaultextension=".s",
+            filetypes=[("MIPS Assembly", "*.s")],
+            title="Guardar ASM + runtime (MARS)"
+        )
+        if not f:
+            return
+
+        try:
+            Path(f).write_text(combined, encoding="utf-8")
+            self._msg(f"Assembler + runtime guardado en: {f}\n")
         except Exception as e:
             messagebox.showerror("Assembler", f"No se pudo guardar:\n{e}")
 
